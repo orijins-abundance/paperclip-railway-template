@@ -19,27 +19,28 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
   tailscale --socket="$TS_SOCK" up --authkey="$TS_AUTHKEY" --hostname="paperclip-railway"
   echo "[tailscale] Connected! IP: $(tailscale --socket="$TS_SOCK" ip -4)"
 
-  # Set proxy vars for Tailscale userspace networking.
-  # ALL_PROXY routes all traffic (including to Tailscale IPs) through the SOCKS5 proxy.
-  # NO_PROXY excludes Railway internal services and localhost from the proxy.
-  export ALL_PROXY=socks5://localhost:1055
-  export HTTP_PROXY=http://localhost:1055
-  export NO_PROXY=localhost,127.0.0.1,.railway.internal,10.0.0.0/8
-  echo "[tailscale] HTTP/SOCKS5 proxy set on localhost:1055 (NO_PROXY: Railway internals)"
+  # Save proxy URL for agent runtime (injected per-agent, not global).
+  # Global proxy would break cloud API calls from the Paperclip server.
+  export TS_PROXY_URL="socks5://localhost:1055"
+  echo "[tailscale] SOCKS5 proxy available at localhost:1055 (TS_PROXY_URL)"
 else
   echo "[tailscale] Skipped (no TS_AUTHKEY set)"
 fi
 
 # --- OpenCode: register Ollama provider for model discovery ---
 if [ -n "${OLLAMA_HOST:-}" ]; then
+  # Write config to both $HOME/.config and /root/.config because
+  # Paperclip's model discovery uses os.userInfo().homedir (=/root)
+  # not process.env.HOME (=/paperclip)
   OPENCODE_CFG_DIR="$HOME/.config/opencode"
-  mkdir -p "$OPENCODE_CFG_DIR"
+  OPENCODE_CFG_DIR_ROOT="/root/.config/opencode"
+  mkdir -p "$OPENCODE_CFG_DIR" "$OPENCODE_CFG_DIR_ROOT"
 
   # Wait for Tailscale peer route to stabilize before querying Ollama
   echo "[opencode] Waiting for Tailscale peer route to $OLLAMA_HOST ..."
   OLLAMA_READY=false
   for i in 1 2 3 4 5 6 7 8 9 10; do
-    if curl -sf --connect-timeout 3 "${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
+    if curl -sf --connect-timeout 3 --proxy "${TS_PROXY_URL:-}" "${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
       OLLAMA_READY=true
       break
     fi
@@ -49,7 +50,7 @@ if [ -n "${OLLAMA_HOST:-}" ]; then
 
   if [ "$OLLAMA_READY" = "true" ]; then
     echo "[opencode] Ollama reachable! Querying models..."
-    OLLAMA_MODELS=$(curl -sf --connect-timeout 10 "${OLLAMA_HOST}/api/tags" | node -e "
+    OLLAMA_MODELS=$(curl -sf --connect-timeout 10 --proxy "${TS_PROXY_URL:-}" "${OLLAMA_HOST}/api/tags" | node -e "
       const d=require('fs').readFileSync('/dev/stdin','utf8');
       const tags=JSON.parse(d).models||[];
       const out={};
@@ -61,7 +62,7 @@ if [ -n "${OLLAMA_HOST:-}" ]; then
     OLLAMA_MODELS='{}'
   fi
 
-  cat > "$OPENCODE_CFG_DIR/opencode.json" <<EOCFG
+  OPENCODE_CFG_CONTENT=$(cat <<EOCFG
 {
   "provider": {
     "ollama": {
@@ -75,8 +76,11 @@ if [ -n "${OLLAMA_HOST:-}" ]; then
   }
 }
 EOCFG
+)
+  echo "$OPENCODE_CFG_CONTENT" > "$OPENCODE_CFG_DIR/opencode.json"
+  echo "$OPENCODE_CFG_CONTENT" > "$OPENCODE_CFG_DIR_ROOT/opencode.json"
   MODEL_COUNT=$(echo "$OLLAMA_MODELS" | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');console.log(Object.keys(JSON.parse(d)).length)" 2>/dev/null || echo "0")
-  echo "[opencode] Registered ${MODEL_COUNT} Ollama model(s) in $OPENCODE_CFG_DIR/opencode.json"
+  echo "[opencode] Registered ${MODEL_COUNT} Ollama model(s) in $OPENCODE_CFG_DIR + $OPENCODE_CFG_DIR_ROOT"
 else
   echo "[opencode] Skipped Ollama provider (no OLLAMA_HOST set)"
 fi
