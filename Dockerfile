@@ -27,7 +27,8 @@ ARG CLAUDE_CODE_VERSION=latest
 ARG HERMES_AGENT_VERSION=latest
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl tini gosu git gh python3 python3-pip \
+  && apt-get install -y --no-install-recommends ca-certificates curl tini gosu git gh python3 python3-pip iptables \
+  && curl -fsSL https://tailscale.com/install.sh | sh \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install --global --omit=dev @openai/codex@${CODEX_VERSION} opencode-ai tsx
