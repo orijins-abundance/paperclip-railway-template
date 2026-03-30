@@ -25,14 +25,32 @@ fi
 if [ -n "${OLLAMA_HOST:-}" ]; then
   OPENCODE_CFG_DIR="$HOME/.config/opencode"
   mkdir -p "$OPENCODE_CFG_DIR"
-  echo "[opencode] Querying Ollama models from $OLLAMA_HOST ..."
-  OLLAMA_MODELS=$(curl -sf "${OLLAMA_HOST}/api/tags" 2>/dev/null | node -e "
-    const d=require('fs').readFileSync('/dev/stdin','utf8');
-    const tags=JSON.parse(d).models||[];
-    const out={};
-    tags.forEach(m=>{out[m.name]={name:m.name}});
-    process.stdout.write(JSON.stringify(out));
-  " 2>/dev/null || echo '{}')
+
+  # Wait for Tailscale peer route to stabilize before querying Ollama
+  echo "[opencode] Waiting for Tailscale peer route to $OLLAMA_HOST ..."
+  OLLAMA_READY=false
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -sf --connect-timeout 3 "${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
+      OLLAMA_READY=true
+      break
+    fi
+    echo "[opencode] Attempt $i: Ollama not reachable yet, retrying in 2s..."
+    sleep 2
+  done
+
+  if [ "$OLLAMA_READY" = "true" ]; then
+    echo "[opencode] Ollama reachable! Querying models..."
+    OLLAMA_MODELS=$(curl -sf --connect-timeout 10 "${OLLAMA_HOST}/api/tags" | node -e "
+      const d=require('fs').readFileSync('/dev/stdin','utf8');
+      const tags=JSON.parse(d).models||[];
+      const out={};
+      tags.forEach(m=>{out[m.name]={name:m.name}});
+      process.stdout.write(JSON.stringify(out));
+    " 2>/dev/null || echo '{}')
+  else
+    echo "[opencode] WARNING: Could not reach Ollama at $OLLAMA_HOST after 10 attempts"
+    OLLAMA_MODELS='{}'
+  fi
 
   cat > "$OPENCODE_CFG_DIR/opencode.json" <<EOCFG
 {
