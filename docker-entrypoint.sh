@@ -10,13 +10,22 @@ INSTANCE_ID="${PAPERCLIP_INSTANCE_ID:-default}"
 mkdir -p "$PAPERCLIP_HOME" "$PAPERCLIP_HOME/instances/$INSTANCE_ID/logs"
 
 # --- Tailscale VPN (connects to private Tailnet for local model access) ---
+TS_SOCK="/var/run/tailscale/tailscaled.sock"
 if [ -n "${TS_AUTHKEY:-}" ]; then
   echo "[tailscale] Starting tailscaled..."
-  tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock --tun=userspace-networking &
+  tailscaled --state=/var/lib/tailscale/tailscaled.state --socket="$TS_SOCK" --tun=userspace-networking --socks5-server=localhost:1055 --outbound-http-proxy-listen=localhost:1055 &
   sleep 2
   echo "[tailscale] Authenticating..."
-  tailscale --socket=/var/run/tailscale/tailscaled.sock up --authkey="$TS_AUTHKEY" --hostname="paperclip-railway"
-  echo "[tailscale] Connected! IP: $(tailscale --socket=/var/run/tailscale/tailscaled.sock ip -4)"
+  tailscale --socket="$TS_SOCK" up --authkey="$TS_AUTHKEY" --hostname="paperclip-railway"
+  echo "[tailscale] Connected! IP: $(tailscale --socket="$TS_SOCK" ip -4)"
+
+  # Set proxy vars for Tailscale userspace networking.
+  # ALL_PROXY routes all traffic (including to Tailscale IPs) through the SOCKS5 proxy.
+  # NO_PROXY excludes Railway internal services and localhost from the proxy.
+  export ALL_PROXY=socks5://localhost:1055
+  export HTTP_PROXY=http://localhost:1055
+  export NO_PROXY=localhost,127.0.0.1,.railway.internal,10.0.0.0/8
+  echo "[tailscale] HTTP/SOCKS5 proxy set on localhost:1055 (NO_PROXY: Railway internals)"
 else
   echo "[tailscale] Skipped (no TS_AUTHKEY set)"
 fi
